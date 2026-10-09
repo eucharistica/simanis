@@ -1,0 +1,196 @@
+<?php
+declare(strict_types=1);
+require_once __DIR__ . '/../config.php';
+
+header('Content-Type: application/json; charset=utf-8');
+
+function post($k, $default=null){ return $_POST[$k] ?? $default; }
+function asDate($s): string {
+  $s = substr((string)$s, 0, 10);
+  return preg_match('/^\d{4}-\d{2}-\d{2}$/', $s) ? $s : date('Y-m-d');
+}
+function toArray($v): array {
+  if (is_array($v)) return $v;
+  if ($v === null || $v === '') return [];
+  return [$v];
+}
+
+$exclude_poli = ["U0015", "U0016", "U0035", "U0033", "U0041", "U0036"];
+$exclude_list = "'" . implode("','", $exclude_poli) . "'";
+
+$draw   = (int)post('draw', 1);
+$start  = max(0, (int)post('start', 0));
+$length = (int)post('length', 25000);
+if ($length <= 0) $length = 25000;
+
+$colMap = [
+  0  => "a.tgl_registrasi",
+  1  => "pasien.no_rkm_medis",
+  2  => "pasien.nm_pasien",
+  3  => "pasien.jk",
+  4  => "a.tgl_registrasi",
+  5  => "poliklinik.nm_poli",
+  6  => "dokter.nm_dokter",
+  7  => "penjab.png_jawab",
+  8  => "a.status_poli",
+  9  => "a.stts",
+  10 => "soap_perawat",
+  11 => "soap_dokter",
+  12 => "resep_dokter",
+  13 => "validasi_resep",
+  14 => "interval_menit",
+  15 => "diagnosa_pasien",
+];
+
+$orderColIdx = (int)($_POST['order'][0]['column'] ?? 0);
+$orderDir    = strtolower($_POST['order'][0]['dir'] ?? 'desc') === 'asc' ? 'ASC' : 'DESC';
+$orderBy     = $colMap[$orderColIdx] ?? "a.tgl_registrasi";
+
+$search = trim((string)($_POST['search']['value'] ?? ''));
+
+$tgl1 = asDate(post('startDate', date('Y-m-d')));
+$tgl2 = asDate(post('endDate', date('Y-m-d')));
+
+$poli      = array_filter(array_map('trim', toArray(post('poli', []))));
+$stts      = array_filter(array_map('trim', toArray(post('status', []))));
+$caraBayar = array_filter(array_map('trim', toArray(post('caraBayar', []))));
+
+$fromJoin = "
+FROM reg_periksa a
+INNER JOIN penjab ON penjab.kd_pj = a.kd_pj
+INNER JOIN pasien ON pasien.no_rkm_medis = a.no_rkm_medis
+INNER JOIN poliklinik ON poliklinik.kd_poli = a.kd_poli
+INNER JOIN dokter ON dokter.kd_dokter = a.kd_dokter
+LEFT JOIN pemeriksaan_ralan b ON b.no_rawat = a.no_rawat AND a.kd_dokter = b.nik
+LEFT JOIN pemeriksaan_ralan_rehab br ON br.no_rawat = a.no_rawat AND a.kd_dokter = br.nik
+LEFT JOIN pemeriksaan_ralan c ON c.no_rawat = a.no_rawat AND a.kd_dokter <> c.nik
+LEFT JOIN resep_obat ON resep_obat.no_rawat = a.no_rawat
+LEFT JOIN diagnosa_pasien d ON d.no_rawat = a.no_rawat AND d.prioritas = '1' AND d.kd_penyakit NOT LIKE 'Z%'
+LEFT JOIN penyakit p ON p.kd_penyakit = d.kd_penyakit
+";
+
+$where = [];
+$where[] = "a.status_lanjut = 'Ralan'";
+$where[] = "a.kd_poli NOT IN ($exclude_list)";
+$where[] = "a.tgl_registrasi BETWEEN '$tgl1' AND '$tgl2'";
+$where[] = "a.stts != 'Batal'";
+$where[] = "NOT EXISTS (
+  SELECT 1
+  FROM periksa_lab pl
+  WHERE pl.no_rawat = a.no_rawat
+)";
+$where[] = "NOT EXISTS (
+  SELECT 1
+  FROM periksa_radiologi pr
+  WHERE pr.no_rawat = a.no_rawat
+)";
+
+
+if ($poli) {
+  $in = "'" . implode("','", array_map('escape', $poli)) . "'";
+  $where[] = "a.kd_poli IN ($in)";
+}
+if ($stts) {
+  $in = "'" . implode("','", array_map('escape', $stts)) . "'";
+  $where[] = "a.stts IN ($in)";
+}
+if ($caraBayar) {
+  $in = "'" . implode("','", array_map('escape', $caraBayar)) . "'";
+  $where[] = "a.kd_pj IN ($in)";
+}
+
+$whereBaseSql = "WHERE " . implode(" AND ", $where);
+
+$whereWithSearch = $where;
+if ($search !== '') {
+  $s = escape($search);
+  $whereWithSearch[] =
+    "("
+    . "pasien.no_rkm_medis LIKE '%$s%' OR "
+    . "pasien.nm_pasien LIKE '%$s%' OR "
+    . "poliklinik.nm_poli LIKE '%$s%' OR "
+    . "dokter.nm_dokter LIKE '%$s%' OR "
+    . "penjab.png_jawab LIKE '%$s%' OR "
+    . "p.nm_penyakit LIKE '%$s%' OR "
+    . "d.kd_penyakit LIKE '%$s%'"
+    . ")";
+}
+$whereSearchSql = "WHERE " . implode(" AND ", $whereWithSearch);
+
+$recordsTotal = (int)(fetch_assoc(query("
+  SELECT COUNT(*) as jml FROM (
+    SELECT a.no_rawat
+    $fromJoin
+    $whereBaseSql
+    GROUP BY a.no_rawat
+  ) x
+"))['jml'] ?? 0);
+
+$recordsFiltered = (int)(fetch_assoc(query("
+  SELECT COUNT(*) as jml FROM (
+    SELECT a.no_rawat
+    $fromJoin
+    $whereSearchSql
+    GROUP BY a.no_rawat
+  ) x
+"))['jml'] ?? 0);
+
+$sql = "
+SELECT
+  a.tgl_registrasi,
+  pasien.no_rkm_medis,
+  pasien.nm_pasien,
+  pasien.jk,
+  CASE
+    WHEN TIMESTAMPDIFF(MONTH, pasien.tgl_lahir, a.tgl_registrasi) < 1
+      THEN CONCAT(TIMESTAMPDIFF(DAY, pasien.tgl_lahir, a.tgl_registrasi), ' Hr')
+    WHEN TIMESTAMPDIFF(YEAR, pasien.tgl_lahir, a.tgl_registrasi) < 1
+      THEN CONCAT(TIMESTAMPDIFF(MONTH, pasien.tgl_lahir, a.tgl_registrasi), ' Bl')
+    ELSE CONCAT(TIMESTAMPDIFF(YEAR, pasien.tgl_lahir, a.tgl_registrasi), ' Th')
+  END AS umur_status,
+  poliklinik.nm_poli,
+  dokter.nm_dokter,
+  penjab.png_jawab AS cara_bayar,
+  CASE
+    WHEN a.status_poli='Lama' THEN 'Pasien Lama'
+    WHEN a.status_poli='Baru' THEN 'Pasien Baru'
+    ELSE a.status_poli
+  END AS status_poli,
+  a.stts AS status_pasien,
+  IFNULL(c.jam_rawat, '-') AS soap_perawat,
+  IFNULL(CASE WHEN a.kd_poli IN ('U0045','U0021') THEN br.jam_rawat ELSE b.jam_rawat END, '-') AS soap_dokter,
+  IFNULL(resep_obat.jam_peresepan, '-') AS resep_dokter,
+  IFNULL(resep_obat.jam, '-') AS validasi_resep,
+  CASE
+    WHEN c.jam_rawat IS NOT NULL
+     AND (CASE WHEN a.kd_poli IN ('U0045','U0021') THEN br.jam_rawat ELSE b.jam_rawat END) IS NOT NULL
+    THEN TIMESTAMPDIFF(
+      MINUTE,
+      CONCAT(a.tgl_registrasi, ' ', c.jam_rawat),
+      CONCAT(a.tgl_registrasi, ' ', (CASE WHEN a.kd_poli IN ('U0045','U0021') THEN br.jam_rawat ELSE b.jam_rawat END))
+    )
+    ELSE NULL
+  END AS interval_menit,
+  IFNULL(CONCAT(d.kd_penyakit,' - ',p.nm_penyakit), '-') AS diagnosa_pasien
+$fromJoin
+$whereSearchSql
+GROUP BY a.no_rawat
+ORDER BY $orderBy $orderDir
+LIMIT $start, $length
+";
+
+$rows = q($sql);
+
+foreach ($rows as &$r) {
+  if ($r['interval_menit'] === null || $r['interval_menit'] === '') {
+    $r['interval_menit'] = '-';
+  }
+}
+unset($r);
+
+echo json_encode([
+  'draw' => $draw,
+  'recordsTotal' => $recordsTotal,
+  'recordsFiltered' => $recordsFiltered,
+  'data' => $rows,
+]);

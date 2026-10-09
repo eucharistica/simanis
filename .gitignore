@@ -1,0 +1,37 @@
+# Environment dan konfigurasi rahasia
+.env
+.env.*
+!.env.example
+config.local.php
+config.production.php
+config.*.local.php
+
+# Konfigurasi aplikasi yang berisi password
+config.php
+
+# Upload dan file runtime
+uploads/
+storage/
+cache/
+tmp/
+logs/
+*.log
+
+# Backup database
+*.sql
+*.sql.gz
+*.zip
+*.tar
+*.tar.gz
+
+# Dependency
+vendor/
+node_modules/
+
+# IDE dan OS
+.idea/
+.vscode/
+*.suo
+*.user
+Thumbs.db
+.DS_Store
