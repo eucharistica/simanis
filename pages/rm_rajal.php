@@ -220,7 +220,7 @@ async function reloadSummary(){
 function initDataTable(){
   dt = $('#patientVisitTable').DataTable({
     processing:true,
-    serverSide:false,
+    serverSide:true,
     responsive:false,
     autoWidth:false,
     scrollX:true,

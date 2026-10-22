@@ -24,6 +24,10 @@ $tgl2 = asDate(post('endDate', date('Y-m-d')));
 $poli      = array_filter(array_map('trim', toArray(post('poli', []))));
 $stts      = array_filter(array_map('trim', toArray(post('status', []))));
 $caraBayar = array_filter(array_map('trim', toArray(post('caraBayar', []))));
+$draw = (int)post('draw', 1);
+$start = max(0, (int)post('start', 0));
+$length = (int)post('length', 10);
+if ($length < 1 || $length > 100) $length = 10;
 
 $fromJoin = "
 FROM reg_periksa a
@@ -42,8 +46,7 @@ LEFT JOIN penyakit p ON p.kd_penyakit=d.kd_penyakit
 $where = [];
 $where[] = "a.status_lanjut='Ralan'";
 $where[] = "a.kd_poli NOT IN ($exclude_list)";
-$where[] = "a.tgl_registrasi >= '$tgl1'";
-$where[] = "a.tgl_registrasi < DATE_ADD('$tgl2', INTERVAL 1 DAY)";
+$where[] = "a.tgl_registrasi BETWEEN '$tgl1' AND '$tgl2'";
 $where[] = "a.stts!='Batal'";
 
 if ($poli) {
@@ -60,6 +63,9 @@ if ($caraBayar) {
 }
 
 $whereSql = "WHERE " . implode(" AND ", $where);
+
+$countRow = mysqli_fetch_assoc(mysqli_query($GLOBALS['connection'], "SELECT COUNT(DISTINCT a.no_rawat) AS total $fromJoin $whereSql"));
+$recordsTotal = (int)($countRow['total'] ?? 0);
 
 $sql = "
 SELECT
@@ -93,10 +99,14 @@ $fromJoin
 $whereSql
 GROUP BY a.no_rawat
 ORDER BY a.tgl_registrasi DESC, a.no_rawat DESC
+LIMIT $start, $length
 ";
 
 $rows = q($sql);
 
 echo json_encode([
+  'draw' => $draw,
+  'recordsTotal' => $recordsTotal,
+  'recordsFiltered' => $recordsTotal,
   'data' => $rows
 ], JSON_UNESCAPED_UNICODE);
